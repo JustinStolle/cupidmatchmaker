@@ -1,6 +1,6 @@
 import {
     BedrockRuntimeClient,
-    ConverseCommand,
+    ConverseStreamCommand,
 } from "@aws-sdk/client-bedrock-runtime";
 
 type ChatMessage = {
@@ -83,7 +83,7 @@ function buildConversationHistory(history: ChatMessage[], latestUserMessage: str
     return recentHistory;
 }
 
-export async function generateCharacterReply(
+export async function generateCharacterReplyStream(
     characterId: string,
     userMessage: string,
     history: ChatMessage[] = []
@@ -91,7 +91,7 @@ export async function generateCharacterReply(
     const systemPrompt = getSystemPrompt(characterId);
     const messages = buildConversationHistory(history, userMessage);
 
-    const command = new ConverseCommand({
+    const command = new ConverseStreamCommand({
         modelId,
         system: [
             {
@@ -107,16 +107,9 @@ export async function generateCharacterReply(
 
     const response = await client.send(command);
 
-    const text =
-        response.output?.message?.content
-            ?.filter((item) => "text" in item && typeof item.text === "string")
-            .map((item) => item.text)
-            .join("\n")
-            .trim() || "";
-
-    if (!text) {
-        throw new Error("Bedrock returned an empty response.");
+    if (!response.stream) {
+        throw new Error("Bedrock did not return a stream.");
     }
 
-    return text;
+    return response.stream;
 }
