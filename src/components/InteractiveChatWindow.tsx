@@ -72,10 +72,19 @@ export function InteractiveChatWindow({
         }),
       });
 
-      const data = (await response.json()) as ChatApiResponse;
+      const rawText = await response.text();
+      let data: ChatApiResponse = {};
+
+      try {
+        data = rawText ? (JSON.parse(rawText) as ChatApiResponse) : {};
+      } catch {
+        data = {
+          error: rawText || "Server returned a non-JSON response.",
+        };
+      }
 
       if (!response.ok) {
-        throw new Error(data.error || "Something went wrong.");
+        throw new Error(data.error || `Request failed with status ${response.status}.`);
       }
 
       const assistantMessage: Message = {
@@ -153,8 +162,8 @@ export function InteractiveChatWindow({
             >
               <div
                 className={`max-w-[75%] rounded-2xl px-4 py-3 text-slate-800 shadow ${isUser
-                    ? "rounded-tr-sm bg-pink-100"
-                    : "rounded-tl-sm bg-sky-100"
+                  ? "rounded-tr-sm bg-pink-100"
+                  : "rounded-tl-sm bg-sky-100"
                   }`}
               >
                 {message.text}

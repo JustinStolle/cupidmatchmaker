@@ -7,7 +7,7 @@ const region = process.env.BEDROCK_REGION;
 const modelId = process.env.BEDROCK_MODEL_ID;
 
 if (!region) {
-    throw new Error("AWS_REGION environment variable is not set.");
+    throw new Error("BEDROCK_REGION environment variable is not set.");
 }
 
 if (!modelId) {
