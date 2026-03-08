@@ -1,12 +1,13 @@
+import type { Character } from "@/types/character";
 import { jack } from "@/characters/jack";
 import { julie } from "@/characters/julie";
 
-const characters = [julie, jack];
+const characters: Character[] = [julie, jack];
 
 export function getCharacter(characterId: string) {
-  return characters.find((character) => character.id === characterId) ?? null;
+    return characters.find((character) => character.id === characterId) ?? null;
 }
 
 export function getAllCharacters() {
-  return characters;
+    return characters;
 }

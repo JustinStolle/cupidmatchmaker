@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 type Message = {
     id: string;
@@ -15,6 +15,13 @@ type InteractiveChatWindowProps = {
     characterAlias: string;
     intro: string;
     starterQuestions?: string[];
+    timing: {
+        baseDelayMs: number;
+        mediumMessageDelayMs: number;
+        longMessageDelayMs: number;
+        typingSpeedMs: number;
+        punctuationPauseMs: number;
+    };
 };
 
 type ChatApiResponse = {
@@ -35,12 +42,113 @@ function formatTime(timestamp: string) {
     });
 }
 
+function delay(ms: number) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function getMessageLengthDelay(
+    message: string,
+    timing: {
+        mediumMessageDelayMs: number;
+        longMessageDelayMs: number;
+    }
+) {
+    const trimmed = message.trim();
+
+    if (trimmed.length < 40) {
+        return 0;
+    }
+
+    if (trimmed.length < 120) {
+        return timing.mediumMessageDelayMs;
+    }
+
+    return timing.longMessageDelayMs;
+}
+
+function getHumanLikeInitialDelay(
+    message: string,
+    timing: {
+        baseDelayMs: number;
+        mediumMessageDelayMs: number;
+        longMessageDelayMs: number;
+    }
+) {
+    return timing.baseDelayMs + getMessageLengthDelay(message, timing);
+}
+
+async function delayForCharacter(char: string, timing: InteractiveChatWindowProps["timing"]) {
+    const baseDelay = timing.typingSpeedMs;
+
+    if (char === "." || char === "!" || char === "?" || char === ",") {
+        await delay(baseDelay + timing.punctuationPauseMs);
+        return;
+    }
+
+    await delay(baseDelay);
+}
+
+function createUserMessage(text: string): Message {
+    return {
+        id: `user-${Date.now()}`,
+        role: "user",
+        text,
+        timestamp: new Date().toISOString(),
+    };
+}
+
+function createStreamingAssistantMessage(): Message {
+    return {
+        id: `assistant-stream-${Date.now()}`,
+        role: "assistant",
+        text: "",
+        timestamp: new Date().toISOString(),
+    };
+}
+
+async function readStreamedResponse(response: Response): Promise<string> {
+    if (!response.body) {
+        throw new Error("Streaming response body was missing.");
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let fullText = "";
+
+    while (true) {
+        const { done, value } = await reader.read();
+
+        if (done) {
+            break;
+        }
+
+        fullText += decoder.decode(value, { stream: true });
+    }
+
+    fullText += decoder.decode();
+
+    return fullText;
+}
+
+function isStreamingAssistantMessage(message: Message) {
+    return message.id.startsWith("assistant-stream-");
+}
+
+function isEmptyStreamingAssistantMessage(message: Message) {
+    return isStreamingAssistantMessage(message) && !message.text;
+}
+
+function getTypingIndicatorText(characterName: string) {
+    return `${characterName} is typing…`;
+}
+
 export function InteractiveChatWindow({
     characterId,
     characterName,
     characterAlias,
     intro,
     starterQuestions = [],
+    timing,
 }: InteractiveChatWindowProps) {
     const initialMessages = useMemo<Message[]>(
         () => [
@@ -58,9 +166,9 @@ export function InteractiveChatWindow({
     const [inputValue, setInputValue] = useState("");
     const [isReplying, setIsReplying] = useState(false);
     const [hasLoadedStoredMessages, setHasLoadedStoredMessages] = useState(false);
-    const messagesContainerRef = useRef<HTMLDivElement | null>(null);
     const messagesEndRef = useRef<HTMLDivElement | null>(null);
     const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+    const isReplyingRef = useRef(false);
 
     useEffect(() => {
         const storageKey = getStorageKey(characterId);
@@ -128,6 +236,16 @@ export function InteractiveChatWindow({
     }, [hasLoadedStoredMessages, messages, isReplying]);
 
     useEffect(() => {
+        if (!hasLoadedStoredMessages) {
+            return;
+        }
+
+        requestAnimationFrame(() => {
+            focusTextarea();
+        });
+    }, [hasLoadedStoredMessages]);
+
+    useEffect(() => {
         const textarea = textareaRef.current;
         if (!textarea) return;
 
@@ -135,35 +253,79 @@ export function InteractiveChatWindow({
         textarea.style.height = `${textarea.scrollHeight}px`;
     }, [inputValue]);
 
+    function replaceStreamingMessage(
+        streamingAssistantId: string,
+        text: string
+    ) {
+        setMessages((current) =>
+            current.map((message) =>
+                message.id === streamingAssistantId
+                    ? {
+                        ...message,
+                        id: `assistant-${Date.now()}`,
+                        text: text || "I’m not sure what to say yet.",
+                        timestamp: new Date().toISOString(),
+                    }
+                    : message
+            )
+        );
+    }
+
+    function replaceStreamingMessageWithError(
+        streamingAssistantId: string,
+        error: unknown
+    ) {
+        setMessages((current) =>
+            current.map((message) =>
+                message.id === streamingAssistantId
+                    ? {
+                        ...message,
+                        id: `assistant-error-${Date.now()}`,
+                        text:
+                            error instanceof Error
+                                ? `Sorry, something went wrong: ${error.message}`
+                                : "Sorry, something went wrong.",
+                        timestamp: new Date().toISOString(),
+                    }
+                    : message
+            )
+        );
+    }
+
+    function updateStreamingMessage(streamingAssistantId: string, text: string) {
+        setMessages((current) => {
+            const index = current.findIndex((m) => m.id === streamingAssistantId);
+
+            if (index === -1) return current;
+
+            const updated = [...current];
+            updated[index] = { ...updated[index], text };
+
+            return updated;
+        });
+    }
+
     async function sendMessage(text: string) {
         const trimmed = text.trim();
 
-        if (!trimmed || isReplying) {
+        if (!trimmed || isReplyingRef.current) {
             return;
         }
+
+        isReplyingRef.current = true;
+
+        const userMessage = createUserMessage(trimmed);
+        const streamingAssistantMessage = createStreamingAssistantMessage();
+        const streamingAssistantId = streamingAssistantMessage.id;
+
+        const nextMessages = [...messages, userMessage, streamingAssistantMessage];
 
         const history = messages.map((message) => ({
             role: message.role,
             text: message.text,
         }));
 
-        const userMessage: Message = {
-            id: `user-${Date.now()}`,
-            role: "user",
-            text: trimmed,
-            timestamp: new Date().toISOString(),
-        };
-
-        const streamingAssistantId = `assistant-stream-${Date.now()}`;
-
-        const streamingAssistantMessage: Message = {
-            id: streamingAssistantId,
-            role: "assistant",
-            text: "",
-            timestamp: new Date().toISOString(),
-        };
-
-        setMessages((current) => [...current, userMessage, streamingAssistantMessage]);
+        setMessages(nextMessages);
         setInputValue("");
         setIsReplying(true);
 
@@ -194,63 +356,33 @@ export function InteractiveChatWindow({
                 throw new Error(errorMessage);
             }
 
-            if (!response.body) {
-                throw new Error("Streaming response body was missing.");
-            }
+            const initialDelay = getHumanLikeInitialDelay(trimmed, timing);
+            await delay(initialDelay);
 
-            const reader = response.body.getReader();
-            const decoder = new TextDecoder();
-            let accumulatedText = "";
+            const fullText = await readStreamedResponse(response);
 
-            while (true) {
-                const { done, value } = await reader.read();
+            let renderedText = "";
 
-                if (done) {
-                    break;
+            while (renderedText.length < fullText.length) {
+                renderedText += fullText[renderedText.length];
+
+                if (renderedText.length % 3 === 0) {
+                    updateStreamingMessage(streamingAssistantId, renderedText);
                 }
 
-                accumulatedText += decoder.decode(value, { stream: true });
-
-                setMessages((current) =>
-                    current.map((message) =>
-                        message.id === streamingAssistantId
-                            ? {
-                                ...message,
-                                text: accumulatedText,
-                            }
-                            : message
-                    )
-                );
+                await delayForCharacter(renderedText[renderedText.length - 1], timing);
             }
 
-            accumulatedText += decoder.decode();
-
-            setMessages((current) =>
-                current.map((message) =>
-                    message.id === streamingAssistantId
-                        ? {
-                            ...message,
-                            text: accumulatedText || "I’m not sure what to say yet.",
-                        }
-                        : message
-                )
-            );
+            replaceStreamingMessage(streamingAssistantId, renderedText);
         } catch (error) {
-            setMessages((current) =>
-                current.map((message) =>
-                    message.id === streamingAssistantId
-                        ? {
-                            ...message,
-                            text:
-                                error instanceof Error
-                                    ? `Sorry, something went wrong: ${error.message}`
-                                    : "Sorry, something went wrong.",
-                        }
-                        : message
-                )
-            );
+            replaceStreamingMessageWithError(streamingAssistantId, error);
         } finally {
+            isReplyingRef.current = false;
             setIsReplying(false);
+
+            requestAnimationFrame(() => {
+                focusTextarea();
+            });
         }
     }
 
@@ -261,13 +393,19 @@ export function InteractiveChatWindow({
         }
     }
 
-    function handleSubmit(event: FormEvent<HTMLFormElement>) {
+    function handleSubmit(event: React.SyntheticEvent<HTMLFormElement>) {
         event.preventDefault();
         void sendMessage(inputValue);
     }
 
-    function handleStarterQuestionClick(question: string) {
+    function handleStarterQuestionClick(question: string, event: React.MouseEvent<HTMLButtonElement>) {
+        event.currentTarget.blur();
+
         void sendMessage(question);
+
+        requestAnimationFrame(() => {
+            focusTextarea();
+        });
     }
 
     function handleClearConversation() {
@@ -276,11 +414,19 @@ export function InteractiveChatWindow({
         setMessages(initialMessages);
         setInputValue("");
         setIsReplying(false);
+
+        requestAnimationFrame(() => {
+            focusTextarea();
+        });
+    }
+
+    function focusTextarea() {
+        textareaRef.current?.focus();
     }
 
     if (!hasLoadedStoredMessages) {
         return (
-            <div className="mx-auto max-w-4xl rounded-3xl border-4 border-white bg-white shadow-2xl">
+            <div className="mx-auto max-w-4xl overflow-hidden rounded-3xl border-4 border-white bg-white shadow-2xl">
                 <div className="border-b bg-pink-500 px-6 py-4 text-white">
                     <div className="text-sm uppercase tracking-[0.2em] opacity-90">
                         CupidMatchmaker Chat
@@ -296,7 +442,7 @@ export function InteractiveChatWindow({
     }
 
     return (
-        <div className="mx-auto max-w-4xl rounded-3xl border-4 border-white bg-white shadow-2xl">
+        <div className="mx-auto max-w-4xl overflow-hidden rounded-3xl border-4 border-white bg-white shadow-2xl">
             <div className="border-b bg-pink-500 px-6 py-4 text-white">
                 <div className="flex items-start justify-between gap-4">
                     <div>
@@ -311,6 +457,7 @@ export function InteractiveChatWindow({
                     <button
                         type="button"
                         onClick={handleClearConversation}
+                        disabled={isReplying}
                         className="rounded-xl border border-pink-200 bg-white/15 px-3 py-2 text-sm font-bold text-white transition hover:bg-white/25"
                     >
                         Clear Chat
@@ -328,7 +475,7 @@ export function InteractiveChatWindow({
                             <button
                                 key={question}
                                 type="button"
-                                onClick={() => handleStarterQuestionClick(question)}
+                                onClick={(event) => handleStarterQuestionClick(question, event)}
                                 disabled={isReplying}
                                 className="rounded-full border border-pink-300 bg-white px-4 py-2 text-sm font-medium text-pink-700 transition hover:bg-pink-100 disabled:cursor-not-allowed disabled:opacity-60"
                             >
@@ -340,7 +487,6 @@ export function InteractiveChatWindow({
             ) : null}
 
             <div
-                ref={messagesContainerRef}
                 className="max-h-[60vh] space-y-4 overflow-y-auto p-6"
             >
                 {messages.map((message) => {
@@ -352,32 +498,25 @@ export function InteractiveChatWindow({
                             className={`flex ${isUser ? "justify-end" : "justify-start"}`}
                         >
                             <div
-                                className={`max-w-[75%] rounded-2xl px-4 py-3 text-slate-800 shadow ${isUser
-                                    ? "rounded-tr-sm bg-pink-100"
-                                    : "rounded-tl-sm bg-sky-100"
+                                className={`max-w-[75%] rounded-2xl px-4 py-3 shadow ${isUser
+                                    ? "rounded-tr-sm bg-pink-100 text-slate-800"
+                                    : isEmptyStreamingAssistantMessage(message)
+                                        ? "rounded-tl-sm bg-sky-50 text-slate-500 italic"
+                                        : "rounded-tl-sm bg-sky-100 text-slate-800"
                                     }`}
                             >
                                 <div className="whitespace-pre-wrap">
-                                    {message.text || (message.id.includes("assistant-stream-") ? "typing..." : "")}
+                                    {message.text || (isEmptyStreamingAssistantMessage(message) ? getTypingIndicatorText(characterName) : "")}
                                 </div>
-                                <div className="mt-2 text-right text-xs text-slate-500">
-                                    {formatTime(message.timestamp)}
-                                </div>
+                                {!isStreamingAssistantMessage(message) && (
+                                    <div className="mt-2 text-right text-xs text-slate-500">
+                                        {formatTime(message.timestamp)}
+                                    </div>
+                                )}
                             </div>
                         </div>
                     );
                 })}
-
-                {isReplying ? (
-                    <div className="flex justify-start">
-                        <div className="max-w-[75%] rounded-2xl rounded-tl-sm bg-sky-100 px-4 py-3 text-slate-500 shadow">
-                            <div>typing...</div>
-                            <div className="mt-2 text-right text-xs text-slate-400">
-                                {formatTime(new Date().toISOString())}
-                            </div>
-                        </div>
-                    </div>
-                ) : null}
 
                 <div ref={messagesEndRef} />
             </div>
@@ -390,7 +529,6 @@ export function InteractiveChatWindow({
                         onChange={(event) => setInputValue(event.target.value)}
                         onKeyDown={handleKeyDown}
                         placeholder="Type your message..."
-                        disabled={isReplying}
                         rows={1}
                         className="flex-1 resize-none rounded-2xl border border-slate-400 bg-white px-4 py-3 text-slate-900 placeholder:text-slate-500 outline-none ring-0 focus:border-pink-500 focus:bg-white disabled:bg-slate-100 disabled:text-slate-500"
                     />

@@ -32,6 +32,7 @@ export default async function ChatPage({ params }: ChatPageProps) {
                 characterAlias={character.alias}
                 intro={character.intro}
                 starterQuestions={character.starterQuestions}
+                timing={character.timing}
             />
         </main>
     );

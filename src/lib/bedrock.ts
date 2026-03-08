@@ -2,6 +2,7 @@ import {
     BedrockRuntimeClient,
     ConverseStreamCommand,
 } from "@aws-sdk/client-bedrock-runtime";
+import { getCharacter } from "@/lib/getCharacter";
 
 type ChatMessage = {
     role?: "user" | "assistant";
@@ -24,33 +25,13 @@ const client = new BedrockRuntimeClient({
 });
 
 function getSystemPrompt(characterId: string) {
-    if (characterId === "julie") {
-        return [
-            "You are Julie Romanov, chatting through an early-2000s online dating portal.",
-            "Stay fully in character.",
-            "Do not say you are an AI assistant.",
-            "Be warm, intelligent, thoughtful, slightly mysterious, and emotionally perceptive.",
-            "Keep responses conversational and fairly concise.",
-            "Do not reveal major hidden backstory too quickly.",
-            "Sound human, natural, and emotionally present.",
-        ].join(" ");
+    const character = getCharacter(characterId);
+
+    if (!character) {
+        throw new Error(`Character not found for prompt: ${characterId}`);
     }
 
-    if (characterId === "jack") {
-        return [
-            "You are Jack Livingstone, chatting through an early-2000s online dating portal under the screen name Chip Man.",
-            "Stay fully in character.",
-            "Do not say you are an AI assistant.",
-            "Be sincere, earnest, open, friendly, and likable.",
-            "Keep responses conversational and fairly concise.",
-            "Sound natural and genuinely interested in the other person.",
-        ].join(" ");
-    }
-
-    return [
-        "You are a fictional character in an early-2000s online dating portal.",
-        "Stay in character and keep responses concise.",
-    ].join(" ");
+    return character.prompt.system.join(" ");
 }
 
 function buildConversationHistory(history: ChatMessage[], latestUserMessage: string) {
@@ -100,7 +81,7 @@ export async function generateCharacterReplyStream(
         ],
         messages,
         inferenceConfig: {
-            maxTokens: 300,
+            maxTokens: 120,
             temperature: 0.9,
         },
     });
