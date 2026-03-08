@@ -2,9 +2,15 @@ import { NextRequest, NextResponse } from "next/server";
 import { getCharacter } from "@/lib/getCharacter";
 import { generateCharacterReply } from "@/lib/bedrock";
 
+type ChatMessage = {
+    role?: "user" | "assistant";
+    text?: string;
+};
+
 type ChatRequestBody = {
     characterId?: string;
     message?: string;
+    history?: ChatMessage[];
 };
 
 export async function POST(request: NextRequest) {
@@ -21,6 +27,7 @@ export async function POST(request: NextRequest) {
 
     const characterId = body.characterId?.trim();
     const message = body.message?.trim();
+    const history = Array.isArray(body.history) ? body.history : [];
 
     if (!characterId) {
         return NextResponse.json(
@@ -46,7 +53,7 @@ export async function POST(request: NextRequest) {
     }
 
     try {
-        const reply = await generateCharacterReply(character.id, message);
+        const reply = await generateCharacterReply(character.id, message, history);
 
         return NextResponse.json({ reply });
     } catch (error) {
