@@ -3,7 +3,7 @@ import {
     ConverseCommand,
 } from "@aws-sdk/client-bedrock-runtime";
 
-const region = process.env.AWS_REGION;
+const region = process.env.BEDROCK_REGION;
 const modelId = process.env.BEDROCK_MODEL_ID;
 
 if (!region) {
