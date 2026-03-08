@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getCharacter } from "@/lib/getCharacter";
-import { buildMockReply } from "@/lib/generateCharacterReply";
+import { generateCharacterReply } from "@/lib/bedrock";
 
 type ChatRequestBody = {
     characterId?: string;
@@ -45,7 +45,21 @@ export async function POST(request: NextRequest) {
         );
     }
 
-    const reply = buildMockReply(character.id, message);
+    try {
+        const reply = await generateCharacterReply(character.id, message);
 
-    return NextResponse.json({ reply });
+        return NextResponse.json({ reply });
+    } catch (error) {
+        console.error("Bedrock chat error:", error);
+
+        return NextResponse.json(
+            {
+                error:
+                    error instanceof Error
+                        ? error.message
+                        : "Failed to generate reply.",
+            },
+            { status: 500 }
+        );
+    }
 }
